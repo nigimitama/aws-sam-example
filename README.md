@@ -1,4 +1,23 @@
-# sam pipline のテスト
+# sam pipline を試す
+
+## 下準備
+
+### samconfig.toml ファイルをリポジトリから除外する
+
+samconfig.toml の中の指示と、作られる CI/CD パイプラインの設定が競合して
+
+> Error: Cannot use both --resolve-s3 and --s3-bucket parameters. Please use only one.
+
+というエラーが出るため、リポジトリから除外します
+
+```sh
+echo -e '\nsamconfig.toml' >> .gitignore
+git rm --cache samconfig.toml
+git add .
+git commit -m 'Remove samconfig.toml
+```
+
+## sam pipeline init コマンド
 
 次のコマンドで pipeline の設定を開始します。
 
@@ -241,7 +260,6 @@ Successfully created the pipeline configuration file(s):
 │       └── pipeline.yaml
 ├── .gitignore
 ├── README.md
-├── samconfig.toml
 ├── src
 │   ├── Dockerfile
 │   └── app.py
