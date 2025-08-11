@@ -13,8 +13,7 @@ samconfig.toml の中の指示と、作られる CI/CD パイプラインの設�
 ```sh
 echo -e '\nsamconfig.toml' >> .gitignore
 git rm --cache samconfig.toml
-git add .
-git commit -m 'Remove samconfig.toml
+git add .gitignore samconfig.toml
 ```
 
 ## sam pipeline init コマンド
@@ -204,6 +203,8 @@ Does your application contain any IMAGE type Lambda functions? [y/N]: y # yを�
 Please enter the ECR image repository ARN(s) for your Image type function(s).If you do not yet have a repository, we will create one for you []: # Enterを押す
 ```
 
+こうして作成された Pipeline の情報は `.aws-sam/pipeline/pipelineconfig.toml` に保存されています。
+
 ### Github Actions の設定
 
 ```sh
@@ -246,25 +247,6 @@ Successfully created the pipeline configuration file(s):
 ```
 
 これで完了し、Github Actions の設定ファイル `.github/workflows/pipeline.yaml` が生成されます。
-
-`.aws-sam/pipeline/pipelineconfig.toml` も作られ、ソースコードはだいたいこのようになっています。
-
-```
-.
-├── .aws-sam
-│   ├── build.toml
-│   └── pipeline
-│       └── pipelineconfig.toml
-├── .github
-│   └── workflows
-│       └── pipeline.yaml
-├── .gitignore
-├── README.md
-├── src
-│   ├── Dockerfile
-│   └── app.py
-└── template.yaml
-```
 
 ## 参考
 
