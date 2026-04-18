@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  # S3 Files を利用するための VPC とサブネットを定義
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  # TCP 2049で通信するセキュリティグループ（Lambda用とS3Files MountTarget用）
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Lambda
+      VpcId: !Ref VPC
+
+  MountTargetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for S3 Files mount target
+      VpcId: !Ref VPC
+
+  LambdaToMountTargetEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt LambdaSecurityGroup.GroupId
+      Description: Allow NFS to S3 Files mount target
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      DestinationSecurityGroupId: !GetAtt MountTargetSecurityGroup.GroupId
+
+  MountTargetFromLambdaIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt MountTargetSecurityGroup.GroupId
+      Description: Allow NFS from Lambda
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !GetAtt LambdaSecurityGroup.GroupId
+
+  # ファイルシステムからバケットにアクセスするためのIAMロール
+  # 参考: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-prereq-policies.html#s3-files-prereq-iam
+  S3AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowS3FilesAssumeRole
+            Effect: Allow
+            Principal:
+              Service: elasticfilesystem.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:s3files:${AWS::Region}:${AWS::AccountId}:file-system/*"
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3BucketPermissions
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !Sub "arn:aws:s3:::${S3Bucket}"
+                Condition:
+                  StringEquals:
+                    aws:ResourceAccount: !Ref AWS::AccountId
+
+              - Sid: S3ObjectPermissions
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:DeleteObject*
+                  - s3:GetObject*
+                  - s3:List*
+                  - s3:PutObject*
+                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceAccount: !Ref AWS::AccountId
+
+              - Sid: EventBridgeManage
+                Effect: Allow
+                Action:
+                  - events:DeleteRule
+                  - events:DisableRule
+                  - events:EnableRule
+                  - events:PutRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: "arn:aws:events:*:*:rule/DO-NOT-DELETE-S3-Files*"
+                Condition:
+                  StringEquals:
+                    events:ManagedBy: elasticfilesystem.amazonaws.com
+
+              - Sid: EventBridgeRead
+                Effect: Allow
+                Action:
+                  - events:DescribeRule
+                  - events:ListRuleNamesByTarget
+                  - events:ListRules
+                  - events:ListTargetsByRule
+                Resource: "arn:aws:events:*:*:rule/*"
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::AccountId}-s3-files"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  S3Files:
+    Type: AWS::S3Files::FileSystem
+    Properties:
+      Bucket: !GetAtt S3Bucket.Arn
+      RoleArn: !GetAtt S3AccessRole.Arn
+      SynchronizationConfiguration:
+        ExpirationDataRules:
+          # キャッシュされたデータが期限切れになるまでの日数
+          - DaysAfterLastAccess: 1
+        ImportDataRules:
+          - Prefix: ""
+            # SizeLessThan: 特定のサイズ未満のファイルをキャッシュ対象にする
+            SizeLessThan: 2147483648 # 2GB
+            Trigger: ON_DIRECTORY_FIRST_ACCESS
+
+  S3FilesAccessPoint:
+    Type: AWS::S3Files::AccessPoint
+    Properties:
+      FileSystemId: !GetAtt S3Files.FileSystemArn
+      PosixUser:
+        Uid: "1000"
+        Gid: "1000"
+      RootDirectory:
+        Path: /accesspoint # /にするとPermission deniedで書き込めなかったため指定（S3FilesがマウントされたLambda内で/に保存するとS3上の/accesspointディレクトリに保存される）
+        CreationPermissions:
+          OwnerUid: "1000"
+          OwnerGid: "1000"
+          Permissions: "0755"
+
+  S3FilesMountTarget:
+    Type: AWS::S3Files::MountTarget
+    Properties:
+      FileSystemId: !Ref S3Files
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroups:
+        - !GetAtt MountTargetSecurityGroup.GroupId
+
+  PrivateSubnetIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /s3-files/PrivateSubnetId
+      Type: String
+      Value: !Ref PrivateSubnet
+
+  S3FilesAccessPointArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /s3-files/S3FilesAccessPointArn
+      Type: String
+      Value: !GetAtt S3FilesAccessPoint.AccessPointArn
+
+  LambdaSecurityGroupIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /s3-files/LambdaSecurityGroupId
+      Type: String
+      Value: !GetAtt LambdaSecurityGroup.GroupId

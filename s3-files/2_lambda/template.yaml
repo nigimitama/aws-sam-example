@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  CreateDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: CreateDataFunction
+      CodeUri: src/
+      Handler: app.create_data
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      Timeout: 60
+      MemorySize: 4048
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Sub "${AWS::AccountId}-sam-s3-files-example"
+      Role: !GetAtt S3FilesRoleForFunction.Arn
+      VpcConfig:
+        SubnetIds:
+          - "{{resolve:ssm:/s3-files/PrivateSubnetId}}"
+        SecurityGroupIds:
+          - "{{resolve:ssm:/s3-files/LambdaSecurityGroupId}}"
+      FileSystemConfigs:
+        - Arn: "{{resolve:ssm:/s3-files/S3FilesAccessPointArn}}"
+          LocalMountPath: /mnt/s3files
+
+  CreateDataFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CreateDataFunction}"
+      RetentionInDays: 14
+
+  LoadDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: LoadDataFunction
+      CodeUri: src/
+      Handler: app.load_data
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      Timeout: 60
+      MemorySize: 4048
+      # Events:
+      #   ScheduledEvent:
+      #     Type: Schedule
+      #     Properties:
+      #       Schedule: rate(10 minutes)
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Sub "${AWS::AccountId}-s3-files"
+      Role: !GetAtt S3FilesRoleForFunction.Arn
+      VpcConfig:
+        SubnetIds:
+          - "{{resolve:ssm:/s3-files/PrivateSubnetId}}"
+        SecurityGroupIds:
+          - "{{resolve:ssm:/s3-files/LambdaSecurityGroupId}}"
+      FileSystemConfigs:
+        - Arn: "{{resolve:ssm:/s3-files/S3FilesAccessPointArn}}"
+          LocalMountPath: /mnt/s3files
+
+  LoadDataFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${LoadDataFunction}"
+      RetentionInDays: 14
+
+  # S3 Files を Lambda から利用するための IAM ロールを定義
+  # ref: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-prereq-policies.html#s3-files-prereq-iam
+  S3FilesRoleForFunction:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3FilesClientPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3FilesMount
+                Effect: Allow
+                Action:
+                  - s3files:ClientMount
+                  - s3files:ClientWrite
+                Resource: "{{resolve:ssm:/s3-files/S3FilesAccessPointArn}}"
+              - Sid: S3ReadWriteAccess
+                Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:Put*
+                Resource: !Sub "arn:aws:s3:::${AWS::AccountId}-s3-files-example/*"
+              - Sid: S3BucketListAccess
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${AWS::AccountId}-s3-files-example"
